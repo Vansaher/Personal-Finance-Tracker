@@ -1,4 +1,15 @@
 #!/usr/bin/env python3
+"""
+Maybank PDF → Excel (per-file sheets, Combined, Monthly Summary)
+- Preserves statement order using a running sequence (seq)
+- Handles multi-line descriptions
+- Produces sheets: <each PDF>, Combined, Monthly Summary
+# Steps
+# Put all PDFs in one folder
+# py extract_bank_statements_to_excel.py "Statement_June 2025.pdf" "Statement_July 2025.pdf" -o Finance_Tracker.xlsx -v
+# Makes sure files are sorted by month
+"""
+
 import re
 import argparse
 from pathlib import Path
@@ -6,13 +17,14 @@ from datetime import datetime
 import pdfplumber
 import pandas as pd
 
+# -------- Regex & constants --------
 DATE_ROW_RE = re.compile(
     r'^(?P<date>\d{2}/\d{2})\s+(?P<mid>.+?)\s+'
-    r'(?P<amount>\-?\d{1,3}(?:,\d{3})*\.\d{2}[+-])\s+'
-    r'(?P<balance>\-?\d{1,3}(?:,\d{3})*\.\d{2})\s*$'
+    r'(?P<amount>-?\d{1,3}(?:,\d{3})*\.\d{2}[+-])\s+'
+    r'(?P<balance>-?\d{1,3}(?:,\d{3})*\.\d{2})\s*$'
 )
 
-SKIP_KEYWORDS = [
+SKIP = [
     "URUSNIAGA AKAUN", "ACCOUNT TRANSACTIONS", "ENTRY DATE", "VALUE DATE",
     "TRANSACTION DESCRIPTION", "TRANSACTION AMOUNT", "STATEMENT DATE",
     "ACCOUNT NUMBER", "Maybank Islamic Berhad", "Perhatian / Note",
@@ -22,71 +34,96 @@ SKIP_KEYWORDS = [
     "PLEASE BE REMINDED", "NOTICE:", "KINDLY BE INFORMED",
 ]
 
-def looks_like_header(line: str) -> bool:
-    up = line.upper()
-    return any(k in up for k in SKIP_KEYWORDS)
+def is_skip(line: str) -> bool:
+    u = line.upper()
+    return any(k in u for k in SKIP)
 
-def parse_pdf(path: Path, default_year: int | None = None) -> pd.DataFrame:
+def safe_sheet_name(name: str) -> str:
+    # Excel sheet name: max 31 chars, forbidden: []:*?/\
+    bad = '[]:*?/\\'
+    cleaned = "".join(ch for ch in name if ch not in bad)
+    return (cleaned or "Sheet")[:31]
+
+# -------- Core parser (preserves order) --------
+def parse_pdf(path: Path, year_hint: int | None = None, verbose: bool = False) -> pd.DataFrame:
+    """
+    Returns a DataFrame with columns:
+    seq, page, line, date, date_str, description, amount, balance, source_file
+    """
+    if verbose: print(f"[INFO] Opening: {path}")
     with pdfplumber.open(str(path)) as pdf:
-        all_lines = []
-        for page in pdf.pages:
-            txt = page.extract_text() or ""
-            all_lines.extend([l.rstrip() for l in txt.splitlines() if l.strip()])
+        raw = []  # (page_no, line_idx, text)
+        for i, p in enumerate(pdf.pages, 1):
+            txt = p.extract_text() or ""
+            lines = [l.rstrip() for l in txt.splitlines() if l.strip()]
+            if verbose: print(f"  - Page {i}: {len(lines)} lines")
+            raw.extend((i, j, lines[j]) for j in range(len(lines)))
 
-    # try infer year from “STATEMENT DATE : dd/mm/yy”
-    inferred_year = default_year
-    for line in all_lines:
+    # Infer year from "STATEMENT DATE : dd/mm/yy"
+    inferred_year = year_hint
+    for _, _, line in raw:
         if "STATEMENT DATE" in line.upper():
             m = re.search(r'(\d{2})/(\d{2})/(\d{2,4})', line)
             if m:
                 y = m.group(3)
-                inferred_year = int("20"+y if len(y) == 2 else y)
+                inferred_year = int("20" + y) if len(y) == 2 else int(y)
             break
 
     rows = []
-    current = None
+    cur = None
+    seq = 0
 
-    def flush_current():
-        nonlocal current
-        if not current:
+    def flush():
+        nonlocal cur
+        if not cur:
             return
-        desc = current.get("mid", "").strip()
-        cont = current.get("cont", [])
+        # Build description
+        desc = (cur.get("mid") or "").strip()
+        cont = cur.get("cont", [])
         if cont:
-            parts = [desc] if desc else []
-            parts.extend([c.strip() for c in cont if c.strip()])
+            parts = ([desc] if desc else []) + [c.strip() for c in cont if c.strip()]
             desc = " | ".join(parts)
 
-        amt_tok = current["amount"]
+        # Amount (last char + or - controls sign)
+        amt_tok = cur["amount"]
         sign = -1.0 if amt_tok.endswith("-") else 1.0
         amount = float(amt_tok[:-1].replace(",", "")) * sign
-        balance = float(current["balance"].replace(",", ""))
+        balance = float(cur["balance"].replace(",", ""))
 
-        dd, mm = current["date"].split("/")
-        year = current.get("year") or inferred_year or datetime.now().year
+        # Date
+        dd, mm = cur["date"].split("/")
+        year = cur.get("year") or inferred_year or datetime.now().year
         try:
             dt = datetime(int(year), int(mm), int(dd))
         except ValueError:
             dt = None
 
         rows.append({
+            "seq": cur["seq"],                 # original order
+            "page": cur["page"],
+            "line": cur["line"],
             "date": dt,
-            "date_str": current["date"],
+            "date_str": cur["date"],
             "description": desc,
             "amount": amount,
             "balance": balance,
             "source_file": path.name,
         })
-        current = None
+        cur = None
 
-    for line in all_lines:
-        if looks_like_header(line):
+    # Parse lines in natural page/line order, increment seq per new transaction row
+    for page_no, line_idx, line in raw:
+        if is_skip(line):
             continue
         m = DATE_ROW_RE.match(line)
         if m:
-            flush_current()
+            flush()
+            seq += 1
             gd = m.groupdict()
-            current = {
+            cur = {
+                "seq": seq,
+                "page": page_no,
+                "line": line_idx,
                 "date": gd["date"],
                 "year": inferred_year,
                 "mid": gd["mid"].strip(),
@@ -95,56 +132,110 @@ def parse_pdf(path: Path, default_year: int | None = None) -> pd.DataFrame:
                 "cont": [],
             }
         else:
-            if current and (re.match(r'^\s{2,}\S', line) or "*" in line or re.match(r'^[A-Z0-9].*\*\s*$', line)):
-                if not looks_like_header(line):
-                    current["cont"].append(line.strip())
-    flush_current()
+            # Continuation lines (merchant/location) — keep with current tx
+            if cur and (re.match(r'^\s{2,}\S', line) or "*" in line or re.match(r'^[A-Z0-9].*\*\s*$', line)):
+                if not is_skip(line):
+                    cur["cont"].append(line.strip())
+
+    flush()
 
     df = pd.DataFrame(rows)
     if df.empty:
+        if verbose: print(f"[WARN] Parsed 0 rows from {path.name}")
         return df
+
+    # Tidy description; DO NOT resort (keep seq)
     df["description"] = (
         df["description"].fillna("")
         .str.replace(r'\s*\|\s*\|\s*', ' | ', regex=True)
         .str.strip(" |")
     )
-    return df.sort_values(["date", "amount"], ascending=[True, True]).reset_index(drop=True)
+    df = df.sort_values(["seq"]).reset_index(drop=True)
+    if verbose:
+        dmin = df["date"].min()
+        dmax = df["date"].max()
+        print(f"[OK] {path.name}: {len(df)} rows | {dmin} → {dmax}")
+    return df
 
-def safe_sheet_name(name: str) -> str:
-    # Excel sheet name: max 31 chars, no []:*?/\
-    bad = '[]:*?/\\'
-    cleaned = "".join(ch for ch in name if ch not in bad)
-    return cleaned[:31] if cleaned else "Sheet"
+# -------- Monthly summary from Combined --------
+def monthly_summary(combined: pd.DataFrame) -> pd.DataFrame:
+    if combined.empty:
+        return combined
+    tmp = combined.copy()
+    tmp["month"] = tmp["date"].dt.to_period("M").astype(str)
+    agg = tmp.groupby("month").agg(
+        income=("amount", lambda s: s[s > 0].sum()),
+        expense=("amount", lambda s: s[s < 0].sum()),
+    ).reset_index()
+    agg["net"] = agg["income"] + agg["expense"]
+    # Optional: running net savings over time
+    agg["cumulative_net"] = agg["net"].cumsum()
+    return agg
 
+# -------- CLI --------
 def main():
-    ap = argparse.ArgumentParser(description="Extract Maybank statements (PDF) → Excel with per-file sheets + Combined")
-    ap.add_argument("pdfs", nargs="+", help="Input PDF files")
+    ap = argparse.ArgumentParser(description="Extract Maybank statements (PDF) → Excel with per-file sheets, Combined, Monthly Summary")
+    ap.add_argument("pdfs", nargs="+", help="PDF paths or globs (e.g., *.pdf)")
     ap.add_argument("-o", "--output", default="Finance_Tracker.xlsx", help="Output .xlsx path")
     ap.add_argument("--year", type=int, default=None, help="Force year for DD/MM dates (optional)")
+    ap.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     args = ap.parse_args()
 
-    per_file_frames = []
-    with pd.ExcelWriter(args.output, engine="openpyxl") as writer:
-        for pdf in args.pdfs:
-            p = Path(pdf)
-            if not p.exists():
-                print(f"[WARN] Skipping missing: {p}")
+    # Expand globs so you know exactly which files are parsed
+    files: list[Path] = []
+    for pat in args.pdfs:
+        if any(c in pat for c in "*?[]"):
+            files.extend(sorted(Path().glob(pat)))
+        else:
+            files.append(Path(pat))
+    files = [f for f in files if f.exists()]
+
+    if args.verbose:
+        print("[INFO] Files to parse:")
+        for f in files:
+            print("  -", f)
+    if not files:
+        print("[ERR] No input files matched. Check names/paths.")
+        return
+
+    frames: list[pd.DataFrame] = []
+    with pd.ExcelWriter(args.output, engine="openpyxl") as xw:
+        # Per-file sheets (keep original order via seq)
+        for f in files:
+            try:
+                df = parse_pdf(f, year_hint=args.year, verbose=args.verbose)
+            except Exception as e:
+                print(f"[ERR] {f.name}: {e}")
                 continue
-            df = parse_pdf(p, default_year=args.year)
             if df.empty:
-                print(f"[WARN] No rows parsed for: {p.name}")
                 continue
-            per_file_frames.append(df)
-            sheet = safe_sheet_name(p.stem)
-            df.to_excel(writer, sheet_name=sheet, index=False)
+            frames.append(df)
+            df.to_excel(xw, sheet_name=safe_sheet_name(f.stem), index=False)
 
-        if per_file_frames:
-            combined = pd.concat(per_file_frames, ignore_index=True)
-            combined = combined.sort_values(["date", "source_file", "amount"]).reset_index(drop=True)
-            combined.to_excel(writer, sheet_name="Combined", index=False)
+        # Combined + Monthly Summary
+        if frames:
+            combined = pd.concat(frames, ignore_index=True)
 
-    total_rows = sum(len(df) for df in per_file_frames)
-    print(f"[OK] Wrote {total_rows} rows across {len(per_file_frames)} sheet(s) + Combined → {args.output}")
+            # Add a month column
+            combined["month"] = combined["date"].dt.to_period("M").astype(str)
+
+            # Sort by month then by seq (original within-month order)
+            combined = combined.sort_values(["month", "seq"]).reset_index(drop=True)
+
+            combined.to_excel(xw, sheet_name="Combined", index=False)
+
+            summary = monthly_summary(combined)
+            summary.to_excel(xw, sheet_name="Monthly Summary", index=False)
+
+
+    total_rows = sum(len(df) for df in frames)
+    if total_rows == 0:
+        print("[INFO] Finished but parsed 0 rows (layout mismatch or wrong files?).")
+    else:
+        dmin = min(df["date"].min() for df in frames)
+        dmax = max(df["date"].max() for df in frames)
+        print(f"[DONE] Wrote {total_rows} rows from {len(frames)} file(s) → {args.output}")
+        print(f"       Date range: {dmin} → {dmax}")
 
 if __name__ == "__main__":
     main()
