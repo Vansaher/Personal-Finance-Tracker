@@ -49,18 +49,22 @@ This project extracts bank statements (PDF → CSV), cleans & categorizes transa
 ---
 
 ## 📂 Project Structure
-├── extraction/ # Scripts to parse bank PDFs
-│ └── extract_bank_statements.py
-├── cleaning/ # Scripts to clean and standardize transactions
-│ └── clean_finance_excel.py
-├── dashboard/ # Streamlit app
-│ └── app.py
-├── data/ # Example input/output (ignored in .gitignore)
-│ ├── Statement_June2025.pdf
-│ ├── transactions_clean.csv
-│ └── daily_aggregate.csv
-├── requirements.txt # Dependencies
-└── README.md # Project documentation
+```
+.
+├── extraction/                 # Scripts to parse bank PDFs
+│   └── extract_bank_statements.py
+├── cleaning/                   # Scripts to clean and standardize transactions
+│   └── clean_finance_excel.py
+├── dashboard/                  # Streamlit app
+│   └── app.py
+├── data/                       # Example input/output (ignored in .gitignore)
+│   ├── Statement_June2025.pdf
+│   ├── transactions_clean.csv
+│   └── daily_aggregate.csv
+├── requirements.txt            # Dependencies
+└── README.md                   # Project documentation
+```
+
 
 
 ---
@@ -70,6 +74,32 @@ This project extracts bank statements (PDF → CSV), cleans & categorizes transa
 ### 1. Clone the repo
 ```bash
 git clone https://github.com/your-username/personal-finance-tracker.git
-cd personal-finance-tracker '''
+cd personal-finance-tracker
+```
 
 ### 2. Create a virtual environment (optional but recommended)
+```bash
+python -m venv .venv
+source .venv/bin/activate   # macOS/Linux
+.venv\Scripts\activate      # Windows
+```
+
+### 3. Install dependencies
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Run the dashboard
+```bash
+streamlit run dashboard/app.py
+```
+
+---
+
+## 📊 Dashboard Preview
+- Biggest Expenses (excluding rent)
+- Spending Breakdown by Category
+- Monthly Income vs Expense with Net overlay
+- Forecast: Next Month Expense (ARIMA/SES)
+- Weekday Average Spend (excluding rent)
+- Detailed Transactions Table
