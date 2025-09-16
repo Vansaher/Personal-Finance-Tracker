@@ -4,6 +4,10 @@ A **data science–driven personal finance tracker** built in Python.
 This project extracts bank statements (PDF → CSV), cleans & categorizes transactions, performs exploratory data analysis (EDA), forecasts future spending with ARIMA, and visualizes everything through a **Streamlit dashboard**.
 
 ---
+## 🔗 Link
+
+https://personal-finance-tracker-vansaher.streamlit.app/
+
 
 ## 🚀 Features
 
@@ -103,3 +107,4 @@ streamlit run dashboard/app.py
 - Forecast: Next Month Expense (ARIMA/SES)
 - Weekday Average Spend (excluding rent)
 - Detailed Transactions Table
+
