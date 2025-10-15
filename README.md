@@ -1,4 +1,4 @@
-# 💸 Personal Finance Tracker
+# 💸 Personal Finance Tracker Dashboard with Forecasting
 
 A **data science–driven personal finance tracker** built in Python.  
 This project extracts bank statements (PDF → CSV), cleans & categorizes transactions, performs exploratory data analysis (EDA), forecasts future spending with ARIMA, and visualizes everything through a **Streamlit dashboard**.
@@ -107,4 +107,5 @@ streamlit run dashboard/app.py
 - Forecast: Next Month Expense (ARIMA/SES)
 - Weekday Average Spend (excluding rent)
 - Detailed Transactions Table
+
 
